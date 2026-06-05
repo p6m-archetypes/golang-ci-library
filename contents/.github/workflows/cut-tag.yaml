@@ -1,0 +1,29 @@
+name: Cut Tag
+on:
+  workflow_dispatch:
+    inputs:
+      version-level:
+        description: "Version bump level"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+jobs:
+  cut-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: {% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: {% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}
+          default_bump: {% raw %}${{ inputs.version-level }}{% endraw %}
