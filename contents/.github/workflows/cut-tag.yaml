@@ -11,6 +11,11 @@ on:
           - patch
           - minor
           - major
+
+permissions:
+  id-token: write
+  contents: write
+
 jobs:
   cut-tag:
     runs-on: ubuntu-latest
