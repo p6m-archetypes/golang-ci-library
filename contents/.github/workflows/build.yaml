@@ -12,5 +12,9 @@ jobs:
         with:
           go-version: '1.23'
           cache: true
+      # A fresh render ships no go.sum (generating one needs the Go toolchain, which rendering
+      # doesn't have) — tidy materializes it so the first CI run after `git init` builds. On a
+      # checkout that already carries go.sum this is a no-op.
+      - run: go mod tidy
       - run: go build ./...
       - run: go test ./...
