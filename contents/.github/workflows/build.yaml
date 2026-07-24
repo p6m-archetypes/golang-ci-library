@@ -31,5 +31,15 @@ jobs:
       # doesn't have) — tidy materializes it so the first CI run after `git init` builds. On a
       # checkout that already carries go.sum this is a no-op.
       - run: go mod tidy
+      # GraphQL services import gqlgen-generated code (graph/generated.go, graph/model/) that is
+      # produced, not rendered — run it exactly as the production Dockerfile does. Unlike protoc,
+      # gqlgen is a Go tool, so it runs AFTER tidy (its dep is resolvable); a second tidy picks up
+      # anything the generated code pulls in. No-op for services without a gqlgen.yml.
+      - name: Generate GraphQL server (gqlgen.yml present)
+        run: |
+          if [ -f gqlgen.yml ]; then
+            go run github.com/99designs/gqlgen generate
+            go mod tidy
+          fi
       - run: go build ./...
       - run: go test ./...
