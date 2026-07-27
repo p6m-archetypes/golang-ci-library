@@ -1,45 +1,96 @@
 name: Build
+
 on:
   push:
     branches: ["**"]
   pull_request:
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  IMAGE_NAME: {{ project-name }}
+  APPLICATION_NAME: {{ project-name }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 because golang-cut-tag derives the next version from the latest git tag —
+      # a Go module has no version field to read, so the tags ARE the version history.
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
-          cache: true
-      # gRPC services import protoc-generated bindings from gen/, which are not rendered and
-      # not committed — generate them exactly the way the production Dockerfile does (same
-      # pinned plugin versions), before tidy so the local package resolves. No-op for services
-      # without a proto/ directory.
-      - name: Generate gRPC bindings (proto/ present)
+          fetch-depth: 0
+
+      - uses: p6m-actions/golang-setup@v1
+
+      - name: Cut Patch Version
+        if: github.ref_name == 'main'
+        id: cut-patch
+        uses: p6m-actions/golang-cut-tag@v1
+        with:
+          version-level: patch
+
+      # golang-build generates the code a Go service imports but never commits — protobuf bindings
+      # under gen/ for gRPC, the gqlgen server for GraphQL — before it tidies, builds and tests.
+      # Keeping that inside the build action is what stops the CI path and the container build path
+      # from disagreeing about what a fresh clone contains.
+      - name: Build
+        uses: p6m-actions/golang-build@v1
+
+      - name: Login to Artifactory Container Registry
+        if: github.ref_name == 'main'
+        uses: p6m-actions/docker-repository-login@v1
+        with:
+          registry: {% raw %}${{ vars.P6M_ARTIFACTORY_HOSTNAME }}{% endraw %}
+          username: {% raw %}${{ secrets.P6M_ARTIFACTORY_USERNAME }}{% endraw %}
+          password: {% raw %}${{ secrets.P6M_ARTIFACTORY_IDENTITY_TOKEN }}{% endraw %}
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: p6m-actions/docker-buildx-setup@v1
+
+      - name: Build and Publish Docker Image
+        id: docker-publish
+        uses: p6m-actions/docker-buildx-build-publish@v1
+        with:
+          dockerfile-path: .platform/docker/prd/Dockerfile
+          image-name: {% raw %}${{ env.IMAGE_NAME }}{% endraw %}
+          image-tag: {% raw %}${{ steps.cut-patch.outputs.tag || format('dev-{0}', github.sha) }}{% endraw %}
+          registry: {% raw %}${{ vars.P6M_ARTIFACTORY_HOSTNAME }}/${{ vars.P6M_ARTIFACTORY_PROJECT }}-docker-local/applications{% endraw %}
+          platforms: linux/amd64,linux/arm64
+          push: {% raw %}${{ github.ref_name == 'main' }}{% endraw %}
+          skip-setup: true
+          builder-name: {% raw %}${{ steps.buildx.outputs.name }}{% endraw %}
+
+      - name: Make Artifacts
+        if: github.ref_name == 'main'
         run: |
-          if [ -d proto ]; then
-            sudo apt-get update && sudo apt-get install -y protobuf-compiler
-            go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.5
-            go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
-            mkdir -p gen && protoc -I proto \
-              --go_out=gen --go_opt=paths=source_relative \
-              --go-grpc_out=gen --go-grpc_opt=paths=source_relative \
-              $(find proto -name '*.proto')
-          fi
-      # A fresh render ships no go.sum (generating one needs the Go toolchain, which rendering
-      # doesn't have) — tidy materializes it so the first CI run after `git init` builds. On a
-      # checkout that already carries go.sum this is a no-op.
-      - run: go mod tidy
-      # GraphQL services import gqlgen-generated code (graph/generated.go, graph/model/) that is
-      # produced, not rendered — run it exactly as the production Dockerfile does. Unlike protoc,
-      # gqlgen is a Go tool, so it runs AFTER tidy (its dep is resolvable); a second tidy picks up
-      # anything the generated code pulls in. No-op for services without a gqlgen.yml.
-      - name: Generate GraphQL server (gqlgen.yml present)
-        run: |
-          if [ -f gqlgen.yml ]; then
-            go run github.com/99designs/gqlgen generate
-            go mod tidy
-          fi
-      - run: go build ./...
-      - run: go test ./...
+          echo '{% raw %}${{ steps.docker-publish.outputs.image-digest }}{% endraw %}' | tee digest.txt
+
+      - name: Create Github release
+        if: github.ref_name == 'main'
+        uses: ncipollo/release-action@v1
+        with:
+          name: Version {% raw %}${{ steps.cut-patch.outputs.version }}{% endraw %}
+          tag: {% raw %}${{ steps.cut-patch.outputs.tag }}{% endraw %}
+          makeLatest: true
+          artifacts: "digest.txt"
+          removeArtifacts: true
+          generateReleaseNotes: true
+          body: |
+            Application version: `{% raw %}${{ steps.cut-patch.outputs.version }}{% endraw %}`
+            Docker image digest: `{% raw %}${{ steps.docker-publish.outputs.image-digest }}{% endraw %}`
+
+      - name: Update Application Manifest
+        if: github.ref_name == 'main'
+        uses: p6m-actions/platform-application-manifest-dispatch@v1
+        with:
+          repository: {% raw %}${{ github.repository }}{% endraw %}
+          image-name: {% raw %}${{ env.IMAGE_NAME }}{% endraw %}
+          environment: "dev"
+          digest: {% raw %}${{ steps.docker-publish.outputs.image-digest }}{% endraw %}
+          update-manifest-token: {% raw %}${{ secrets.P6M_UPDATE_MANIFEST_TOKEN }}{% endraw %}
+          platform-dispatch-url: {% raw %}${{ vars.P6M_PLATFORM_DISPATCH_URL }}{% endraw %}
+          directory-name: {% raw %}${{ env.APPLICATION_NAME }}{% endraw %}
