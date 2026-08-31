@@ -3,8 +3,9 @@
 -- Generates GitHub Actions CI workflows for Go service archetypes:
 --   .github/workflows/build.yaml     — CI build on every push and PR
 --   .github/workflows/cut-tag.yaml   — manual workflow_dispatch release tagging
+--   .github/workflows/promote.yaml   — manual workflow_dispatch promotion of a release to stg/prd
 --
--- Uses community actions: actions/setup-go@v5, mathieudutour/github-tag-action@v6.2
+-- Uses p6m-actions: golang-setup@v1, golang-build@v1, golang-cut-tag@v1
 --
 -- API (called from a parent archetype):
 --   local ci = require("golang-ci")
